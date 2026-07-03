@@ -1,15 +1,45 @@
 # Define global functions
+
+# Every ipmitool call goes through this wrapper : a frozen iDRAC cannot hang the script longer than IPMI_COMMAND_TIMEOUT seconds
+function ipmi() {
+  timeout "$IPMI_COMMAND_TIMEOUT" ipmitool -I $IDRAC_LOGIN_STRING "$@"
+}
+
+# Failsafe watchdog : track the exit code ($1) of the last IPMI command (124 = timeout)
+# After IPMI_MAX_CONSECUTIVE_FAILURES consecutive failures, trigger graceful_exit so the Dell hardware controller takes back fan control
+# Returns 0 on success, 1 on failure so callers can bail out with "track_ipmi_result $? || return 1"
+function track_ipmi_result() {
+  local -r IPMI_EXIT_CODE=$1
+
+  if [ "$IPMI_EXIT_CODE" -eq 0 ]; then
+    IPMI_FAIL_COUNT=0
+    return 0
+  fi
+
+  ((IPMI_FAIL_COUNT++))
+  echo "Error: IPMI command failed or timed out (exit code $IPMI_EXIT_CODE, consecutive failures: $IPMI_FAIL_COUNT/$IPMI_MAX_CONSECUTIVE_FAILURES)" >&2
+
+  # GRACEFUL_EXIT_IN_PROGRESS prevents infinite recursion : graceful_exit itself sends IPMI commands which may also fail
+  if [ "$IPMI_FAIL_COUNT" -ge "$IPMI_MAX_CONSECUTIVE_FAILURES" ] && ! $GRACEFUL_EXIT_IN_PROGRESS; then
+    echo "CRITICAL: iDRAC unresponsive after $IPMI_MAX_CONSECUTIVE_FAILURES consecutive failures, exiting so the Dell hardware fan control takes over." >&2
+    graceful_exit
+  fi
+  return 1
+}
+
 # This function applies Dell's default dynamic fan control profile
 function apply_Dell_default_fan_control_profile() {
   CURRENT_FAN_CONTROL_PROFILE="Dell default dynamic fan control profile"
 
   # State tracking : skip the IPMI command if this profile is already applied (spamming raw commands makes some iDRACs stall and pulse the fans)
   if [ "$LAST_APPLIED_FAN_SPEED" == "DELL_DEFAULT" ]; then
-    return
+    return 0
   fi
 
   # Use ipmitool to send the raw command to set fan control to Dell default
-  ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x01 0x01 > /dev/null
+  ipmi raw 0x30 0x30 0x01 0x01 > /dev/null
+  track_ipmi_result $? || return 1
+  # Only update the state cache on success so a failed command is retried next loop
   LAST_APPLIED_FAN_SPEED="DELL_DEFAULT"
 }
 
@@ -84,15 +114,18 @@ function set_fans_speed() {
 
   # State tracking : skip the IPMI commands if this exact speed is already applied (spamming raw commands makes some iDRACs stall and pulse the fans)
   if [ "$HEXADECIMAL_FAN_SPEED_TO_APPLY" == "$LAST_APPLIED_FAN_SPEED" ]; then
-    return
+    return 0
   fi
 
   # Enable manual fan control, only if not already in manual mode (LAST_APPLIED_FAN_SPEED holds a 0x* value when manual mode is active)
   if [[ "$LAST_APPLIED_FAN_SPEED" != 0x* ]]; then
-    ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x01 0x00 > /dev/null
+    ipmi raw 0x30 0x30 0x01 0x00 > /dev/null
+    track_ipmi_result $? || return 1
   fi
   # Set fans speed to a specific value
-  ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x02 0xff "$HEXADECIMAL_FAN_SPEED_TO_APPLY" > /dev/null
+  ipmi raw 0x30 0x30 0x02 0xff "$HEXADECIMAL_FAN_SPEED_TO_APPLY" > /dev/null
+  track_ipmi_result $? || return 1
+  # Only update the state cache on success so a failed command is retried next loop
   LAST_APPLIED_FAN_SPEED="$HEXADECIMAL_FAN_SPEED_TO_APPLY"
 }
 
@@ -148,7 +181,11 @@ function retrieve_temperatures() {
   local -r IS_EXHAUST_TEMPERATURE_SENSOR_PRESENT=$1
   local -r IS_CPU2_TEMPERATURE_SENSOR_PRESENT=$2
 
-  local -r DATA=$(ipmitool -I $IDRAC_LOGIN_STRING sdr type temperature | grep degrees)
+  # On failure, keep the temperatures from the previous loop; the watchdog exits after too many consecutive failures anyway
+  local DATA
+  DATA=$(ipmi sdr type temperature)
+  track_ipmi_result $? || return 1
+  DATA=$(echo "$DATA" | grep degrees)
 
   # Parse CPU data
   local -r CPU_DATA=$(echo "$DATA" | grep "3\." | grep -Po '\d{2}')
@@ -184,9 +221,10 @@ function retrieve_temperatures() {
 function enable_third_party_PCIe_card_Dell_default_cooling_response() {
   # State tracking : skip the IPMI command if this cooling response is already applied
   if [ "$LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE" == "Enabled" ]; then
-    return
+    return 0
   fi
-  ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0xce 0x00 0x16 0x05 0x00 0x00 0x00 0x05 0x00 0x00 0x00 0x00 > /dev/null
+  ipmi raw 0x30 0xce 0x00 0x16 0x05 0x00 0x00 0x00 0x05 0x00 0x00 0x00 0x00 > /dev/null
+  track_ipmi_result $? || return 1
   LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE="Enabled"
 }
 
@@ -194,9 +232,10 @@ function enable_third_party_PCIe_card_Dell_default_cooling_response() {
 function disable_third_party_PCIe_card_Dell_default_cooling_response() {
   # State tracking : skip the IPMI command if this cooling response is already applied
   if [ "$LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE" == "Disabled" ]; then
-    return
+    return 0
   fi
-  ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0xce 0x00 0x16 0x05 0x00 0x00 0x00 0x05 0x00 0x01 0x00 0x00 > /dev/null
+  ipmi raw 0x30 0xce 0x00 0x16 0x05 0x00 0x00 0x00 0x05 0x00 0x01 0x00 0x00 > /dev/null
+  track_ipmi_result $? || return 1
   LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE="Disabled"
 }
 
@@ -220,6 +259,8 @@ function disable_third_party_PCIe_card_Dell_default_cooling_response() {
 # Prepare traps in case of container exit
 function graceful_exit() {
   echo "Gracefully exiting as requested..."
+  # Tell the watchdog we are already exiting so IPMI failures below don't trigger graceful_exit recursively
+  GRACEFUL_EXIT_IN_PROGRESS=true
   # Invalidate the state cache so the safety commands below are always really sent to the iDRAC
   LAST_APPLIED_FAN_SPEED=""
   LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE=""
@@ -235,7 +276,8 @@ function graceful_exit() {
 
 # Helps debugging when people are posting their output
 function get_Dell_server_model() {
-  local -r IPMI_FRU_content=$(ipmitool -I $IDRAC_LOGIN_STRING fru 2>/dev/null) # FRU stands for "Field Replaceable Unit"
+  local IPMI_FRU_content
+  IPMI_FRU_content=$(ipmi fru 2>/dev/null) # FRU stands for "Field Replaceable Unit"
 
   if [ $? -ne 0 ]; then
     echo "Failed to retrieve iDRAC data, please check IP and credentials." >&2

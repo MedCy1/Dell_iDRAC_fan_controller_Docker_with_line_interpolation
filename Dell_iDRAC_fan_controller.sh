@@ -7,6 +7,10 @@
 source functions.sh
 source constants.sh
 
+# Failsafe watchdog state (see ipmi() and track_ipmi_result() in functions.sh)
+IPMI_FAIL_COUNT=0
+GRACEFUL_EXIT_IN_PROGRESS=false
+
 # Trap the signals for container exit and run graceful_exit function
 trap 'graceful_exit' SIGINT SIGQUIT SIGTERM
 
@@ -75,6 +79,7 @@ echo "iDRAC/IPMI host: $IDRAC_HOST"
 
 # Log the check interval, fan speed objective and CPU temperature threshold
 echo "Check interval: ${CHECK_INTERVAL}s"
+echo "IPMI watchdog: ${IPMI_COMMAND_TIMEOUT}s timeout, exit after $IPMI_MAX_CONSECUTIVE_FAILURES consecutive failures"
 echo "Fan speed interpolation enabled: $FAN_SPEED_INTERPOLATION_ENABLED"
 if $FAN_SPEED_INTERPOLATION_ENABLED; then
   echo "Fan speed lower value: $DECIMAL_LOW_FAN_SPEED_OBJECTIVE%"
