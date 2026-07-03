@@ -277,11 +277,12 @@ function graceful_exit() {
 # Helps debugging when people are posting their output
 function get_Dell_server_model() {
   local IPMI_FRU_content
-  IPMI_FRU_content=$(ipmi fru 2>/dev/null) # FRU stands for "Field Replaceable Unit"
+  # The FRU ("Field Replaceable Unit") inventory dump is slow on some iDRACs (often more than IPMI_COMMAND_TIMEOUT, especially over lanplus)
+  # This runs only once at startup, so use a generous fixed timeout instead of the watchdog one
+  IPMI_FRU_content=$(timeout 60 ipmitool -I $IDRAC_LOGIN_STRING fru 2>/dev/null)
 
   if [ $? -ne 0 ]; then
-    echo "Failed to retrieve iDRAC data, please check IP and credentials." >&2
-    return
+    print_error_and_exit "Failed to retrieve iDRAC FRU data (connection failure or timeout). In LAN mode, check IDRAC_HOST, IDRAC_USERNAME and IDRAC_PASSWORD and that \"IPMI over LAN\" is enabled in the iDRAC settings; in local mode, check that /dev/ipmi0 is mapped into the container and that the ipmi_devintf and ipmi_si kernel modules are loaded on the Docker host"
   fi
 
   SERVER_MANUFACTURER=$(echo "$IPMI_FRU_content" | grep "Product Manufacturer" | awk -F ': ' '{print $2}')
