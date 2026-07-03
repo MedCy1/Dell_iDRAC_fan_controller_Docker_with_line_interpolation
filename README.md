@@ -158,6 +158,33 @@ services:
       - KEEP_THIRD_PARTY_PCIE_CARD_COOLING_RESPONSE_STATE_ON_EXIT=<true or false>
 ```
 
+3. with GPU monitoring and JSON metrics export (requires the [Nvidia container toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) so that `nvidia-smi` is available inside the container):
+
+```yml
+version: '3.8'
+
+services:
+  Dell_iDRAC_fan_controller:
+    image: tigerblue77/dell_idrac_fan_controller:latest
+    container_name: Dell_iDRAC_fan_controller
+    restart: unless-stopped
+    gpus: all
+    environment:
+      - IDRAC_HOST=local
+      - FAN_SPEED=<decimal or hexadecimal fan speed>
+      - CPU_TEMPERATURE_THRESHOLD=<decimal temperature threshold>
+      - CPU_TEMPERATURE_THRESHOLD_FOR_FAN_SPEED_INTERPOLATION=<decimal temperature lower threshold>
+      - HIGH_FAN_SPEED=<decimal or hexadecimal fan speed>
+      - CHECK_INTERVAL=<seconds between each check>
+      - ENABLE_GPU_MONITORING=true
+      - GPU_TEMPERATURE_THRESHOLD_OFFSET=<decimal offset in °C, e.g. 15>
+      - METRICS_EXPORT_PATH=/metrics/fan_metrics.json
+    volumes:
+      - /var/lib/idrac-fan-metrics:/metrics
+    devices:
+      - /dev/ipmi0:/dev/ipmi0:rw
+```
+
 <p align="right">(<a href="#top">back to top</a>)</p>
 
 <!-- PARAMETERS -->
@@ -195,6 +222,41 @@ Example of how interpolation works:
 
 When using fan speed interpolation, we recommend decreasing **CHECK_INTERVAL**, for example "3" (seconds), to avoid the noise nuisance associated with a sudden increase in fan speed.
 - `KEEP_THIRD_PARTY_PCIE_CARD_COOLING_RESPONSE_STATE_ON_EXIT` parameter is a boolean that allows to keep the third-party PCIe card Dell default cooling response state upon exit. **Default** value is false, so that it resets the third-party PCIe card Dell default cooling response to Dell default.
+
+### GPU monitoring (optional)
+
+Useful when the server hosts GPUs whose heat is invisible to the CPU-only logic. When enabled, the reference temperature used for the thresholds and the fan speed interpolation becomes `MAX(highest CPU temperature, highest GPU temperature - offset)` instead of the highest CPU temperature alone.
+
+- `ENABLE_GPU_MONITORING` parameter is a boolean that enables Nvidia GPU temperature monitoring through `nvidia-smi`. The container must be run with GPU access (`--gpus all` or `gpus: all` in docker-compose, requires the Nvidia container toolkit) ; the script refuses to start if enabled without `nvidia-smi` available. The temperature used is the maximum among all detected GPUs. **Default** value is false.
+- `GPU_TEMPERATURE_THRESHOLD_OFFSET` parameter is subtracted from the raw GPU temperature before comparison against the CPU thresholds, because GPUs tolerate higher temperatures than CPUs. Example: with an offset of 15, a GPU at 75°C is treated like a CPU at 60°C. **Default** value is 0(°C).
+
+If `nvidia-smi` fails at runtime (driver hiccup, GPU reset), the GPU temperature is displayed as "-" and GPUs temporarily stop driving the fan speed ; CPU-based control keeps working. A persistent `nvidia-smi` failure turns the container unhealthy (see `healthcheck.sh`).
+
+### Failsafe watchdog
+
+Every `ipmitool` call is wrapped in a `timeout` so a frozen iDRAC cannot hang the script. After too many consecutive failures, the script logs `CRITICAL: iDRAC unresponsive...`, restores the Dell default dynamic fan control profile (best effort) and exits, so that the Dell hardware controller takes back fan control. Combine with `restart: unless-stopped` to retry automatically.
+
+- `IPMI_COMMAND_TIMEOUT` parameter is the timeout (in seconds) applied to every `ipmitool` command. **Default** value is 5(s).
+- `IPMI_MAX_CONSECUTIVE_FAILURES` parameter is the number of consecutive failed or timed-out IPMI commands before the script exits. **Default** value is 3.
+
+### Metrics export (optional)
+
+- `METRICS_EXPORT_PATH` parameter is the path of a JSON file written at the end of every check interval, for consumption by an external monitoring agent (Telegraf, node_exporter textfile-style collector, Home Assistant, ...). **Default** value is empty (disabled).
+
+The file is written atomically (temporary file then `mv`), so a reader can never see a partial JSON object. Mount the directory as a volume to read it from the host (see docker-compose example 3). Content example:
+
+```json
+{"timestamp":"2026-07-03T14:05:32+02:00","cpu_temp":54,"gpu_temp":71,"inlet_temp":22,"current_fan_speed_percent":32,"active_profile":"Interpolated fan control profile (32%)"}
+```
+
+| Field | Description |
+| ----- | ----------- |
+| `timestamp` | ISO 8601 date of the measurement |
+| `cpu_temp` | Highest CPU temperature (°C) |
+| `gpu_temp` | Highest raw GPU temperature (°C), `null` when GPU monitoring is disabled or `nvidia-smi` failed |
+| `inlet_temp` | Inlet temperature (°C) |
+| `current_fan_speed_percent` | Fan speed really applied to the iDRAC (%), `null` when the Dell default dynamic profile is in control |
+| `active_profile` | Human-readable active fan control profile |
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
