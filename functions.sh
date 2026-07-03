@@ -1,9 +1,16 @@
 # Define global functions
 # This function applies Dell's default dynamic fan control profile
 function apply_Dell_default_fan_control_profile() {
+  CURRENT_FAN_CONTROL_PROFILE="Dell default dynamic fan control profile"
+
+  # State tracking : skip the IPMI command if this profile is already applied (spamming raw commands makes some iDRACs stall and pulse the fans)
+  if [ "$LAST_APPLIED_FAN_SPEED" == "DELL_DEFAULT" ]; then
+    return
+  fi
+
   # Use ipmitool to send the raw command to set fan control to Dell default
   ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x01 0x01 > /dev/null
-  CURRENT_FAN_CONTROL_PROFILE="Dell default dynamic fan control profile"
+  LAST_APPLIED_FAN_SPEED="DELL_DEFAULT"
 }
 
 # Apply user-defined fan control settings
@@ -75,10 +82,18 @@ function set_fans_speed() {
     HEXADECIMAL_FAN_SPEED_TO_APPLY=$(convert_decimal_value_to_hexadecimal "$HEXADECIMAL_FAN_SPEED_TO_APPLY")
   fi
 
-  # Enable manual fan control
-  ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x01 0x00 > /dev/null
+  # State tracking : skip the IPMI commands if this exact speed is already applied (spamming raw commands makes some iDRACs stall and pulse the fans)
+  if [ "$HEXADECIMAL_FAN_SPEED_TO_APPLY" == "$LAST_APPLIED_FAN_SPEED" ]; then
+    return
+  fi
+
+  # Enable manual fan control, only if not already in manual mode (LAST_APPLIED_FAN_SPEED holds a 0x* value when manual mode is active)
+  if [[ "$LAST_APPLIED_FAN_SPEED" != 0x* ]]; then
+    ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x01 0x00 > /dev/null
+  fi
   # Set fans speed to a specific value
   ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x02 0xff "$HEXADECIMAL_FAN_SPEED_TO_APPLY" > /dev/null
+  LAST_APPLIED_FAN_SPEED="$HEXADECIMAL_FAN_SPEED_TO_APPLY"
 }
 
 # Convert first parameter given ($DECIMAL_NUMBER) to hexadecimal
@@ -167,14 +182,22 @@ function retrieve_temperatures() {
 
 # /!\ Use this function only for Gen 13 and older generation servers /!\
 function enable_third_party_PCIe_card_Dell_default_cooling_response() {
-  # We could check the current cooling response before applying but it's not very useful so let's skip the test and apply directly
+  # State tracking : skip the IPMI command if this cooling response is already applied
+  if [ "$LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE" == "Enabled" ]; then
+    return
+  fi
   ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0xce 0x00 0x16 0x05 0x00 0x00 0x00 0x05 0x00 0x00 0x00 0x00 > /dev/null
+  LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE="Enabled"
 }
 
 # /!\ Use this function only for Gen 13 and older generation servers /!\
 function disable_third_party_PCIe_card_Dell_default_cooling_response() {
-  # We could check the current cooling response before applying but it's not very useful so let's skip the test and apply directly
+  # State tracking : skip the IPMI command if this cooling response is already applied
+  if [ "$LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE" == "Disabled" ]; then
+    return
+  fi
   ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0xce 0x00 0x16 0x05 0x00 0x00 0x00 0x05 0x00 0x01 0x00 0x00 > /dev/null
+  LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE="Disabled"
 }
 
 # Returns :
@@ -197,6 +220,9 @@ function disable_third_party_PCIe_card_Dell_default_cooling_response() {
 # Prepare traps in case of container exit
 function graceful_exit() {
   echo "Gracefully exiting as requested..."
+  # Invalidate the state cache so the safety commands below are always really sent to the iDRAC
+  LAST_APPLIED_FAN_SPEED=""
+  LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE=""
   apply_Dell_default_fan_control_profile
 
   # Reset third-party PCIe card cooling response to Dell default depending on the user's choice at startup

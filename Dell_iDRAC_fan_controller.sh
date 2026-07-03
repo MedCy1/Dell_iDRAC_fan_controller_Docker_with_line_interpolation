@@ -94,6 +94,11 @@ TABLE_HEADER_PRINT_COUNTER=$TABLE_HEADER_PRINT_INTERVAL
 # Set the flag used to check if the active fan control profile has changed
 IS_DELL_DEFAULT_FAN_CONTROL_PROFILE_APPLIED=true
 
+# State tracking : cache of the last values actually sent to the iDRAC, so identical IPMI commands are not re-sent every loop
+# Holds "DELL_DEFAULT", a hexadecimal fan speed (0x*), or "" (unknown state, next command will always be sent)
+LAST_APPLIED_FAN_SPEED=""
+LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE=""
+
 # Check present sensors
 IS_EXHAUST_TEMPERATURE_SENSOR_PRESENT=true
 IS_CPU2_TEMPERATURE_SENSOR_PRESENT=true
