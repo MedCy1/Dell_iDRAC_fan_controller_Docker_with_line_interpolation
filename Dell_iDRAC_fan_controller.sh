@@ -14,6 +14,11 @@ GRACEFUL_EXIT_IN_PROGRESS=false
 # Trap the signals for container exit and run graceful_exit function
 trap 'graceful_exit' SIGINT SIGQUIT SIGTERM
 
+# Check that nvidia-smi is available when GPU monitoring is enabled
+if $ENABLE_GPU_MONITORING && ! command -v nvidia-smi &> /dev/null; then
+  print_error_and_exit "ENABLE_GPU_MONITORING is true but nvidia-smi was not found (did you run the container with GPU access, e.g. --gpus all ?)"
+fi
+
 # Prepare, format and define initial variables
 
 # readonly DELL_FRESH_AIR_COMPLIANCE=45
@@ -80,6 +85,10 @@ echo "iDRAC/IPMI host: $IDRAC_HOST"
 # Log the check interval, fan speed objective and CPU temperature threshold
 echo "Check interval: ${CHECK_INTERVAL}s"
 echo "IPMI watchdog: ${IPMI_COMMAND_TIMEOUT}s timeout, exit after $IPMI_MAX_CONSECUTIVE_FAILURES consecutive failures"
+echo "GPU monitoring enabled: $ENABLE_GPU_MONITORING"
+if $ENABLE_GPU_MONITORING; then
+  echo "GPU temperature threshold offset: ${GPU_TEMPERATURE_THRESHOLD_OFFSET}°C (subtracted from GPU temperatures before threshold comparison)"
+fi
 echo "Fan speed interpolation enabled: $FAN_SPEED_INTERPOLATION_ENABLED"
 if $FAN_SPEED_INTERPOLATION_ENABLED; then
   echo "Fan speed lower value: $DECIMAL_LOW_FAN_SPEED_OBJECTIVE%"
@@ -103,6 +112,10 @@ IS_DELL_DEFAULT_FAN_CONTROL_PROFILE_APPLIED=true
 # Holds "DELL_DEFAULT", a hexadecimal fan speed (0x*), or "" (unknown state, next command will always be sent)
 LAST_APPLIED_FAN_SPEED=""
 LAST_APPLIED_THIRD_PARTY_PCIE_COOLING_RESPONSE=""
+
+# GPU temperature state, kept valid even when GPU monitoring is disabled
+GPU_TEMPERATURE="-"
+ADJUSTED_GPU_TEMPERATURE=0
 
 # Check present sensors
 IS_EXHAUST_TEMPERATURE_SENSOR_PRESENT=true
@@ -133,6 +146,17 @@ while true; do
 
   retrieve_temperatures $IS_EXHAUST_TEMPERATURE_SENSOR_PRESENT $IS_CPU2_TEMPERATURE_SENSOR_PRESENT
 
+  # Retrieve the highest GPU temperature if GPU monitoring is enabled
+  if $ENABLE_GPU_MONITORING; then
+    retrieve_gpu_temperature
+  fi
+
+  # Compute the highest CPU temperature, used for interpolation and metrics export
+  HIGHEST_CPU_TEMPERATURE=$CPU1_TEMPERATURE
+  if $IS_CPU2_TEMPERATURE_SENSOR_PRESENT; then
+    HIGHEST_CPU_TEMPERATURE=$(max $CPU1_TEMPERATURE $CPU2_TEMPERATURE)
+  fi
+
   # Initialize a variable to store the comments displayed when the fan control profile changed
   COMMENT=" -"
   # Check if CPU 1 is overheating then apply Dell default dynamic fan control profile if true
@@ -158,13 +182,22 @@ while true; do
       IS_DELL_DEFAULT_FAN_CONTROL_PROFILE_APPLIED=true
       COMMENT="CPU 2 temperature is too high, Dell default dynamic fan control profile applied for safety"
     fi
-  elif CPU1_HEATING || $IS_CPU2_TEMPERATURE_SENSOR_PRESENT && CPU2_HEATING; then
-    HIGHEST_CPU_TEMPERATURE=$CPU1_TEMPERATURE
-    if $IS_CPU2_TEMPERATURE_SENSOR_PRESENT; then
-      HIGHEST_CPU_TEMPERATURE=$(max $CPU1_TEMPERATURE $CPU2_TEMPERATURE)
+  # Check if a GPU is overheating (offset already applied) then apply Dell default dynamic fan control profile if true
+  elif GPU_OVERHEATING; then
+    apply_Dell_default_fan_control_profile
+
+    if ! $IS_DELL_DEFAULT_FAN_CONTROL_PROFILE_APPLIED; then
+      IS_DELL_DEFAULT_FAN_CONTROL_PROFILE_APPLIED=true
+      COMMENT="GPU temperature is too high (${GPU_TEMPERATURE}°C), Dell default dynamic fan control profile applied for safety"
+    fi
+  elif CPU1_HEATING || { $IS_CPU2_TEMPERATURE_SENSOR_PRESENT && CPU2_HEATING; } || GPU_HEATING; then
+    # Reference temperature for interpolation : hottest device, GPU temperature taken after offset adjustment
+    REFERENCE_TEMPERATURE=$HIGHEST_CPU_TEMPERATURE
+    if $ENABLE_GPU_MONITORING; then
+      REFERENCE_TEMPERATURE=$(max $HIGHEST_CPU_TEMPERATURE $ADJUSTED_GPU_TEMPERATURE)
     fi
 
-    DECIMAL_FAN_SPEED_TO_APPLY=$(calculate_interpolated_fan_speed $DECIMAL_LOW_FAN_SPEED_OBJECTIVE $DECIMAL_HIGH_FAN_SPEED_OBJECTIVE $HIGHEST_CPU_TEMPERATURE $CPU_TEMPERATURE_THRESHOLD_FOR_FAN_SPEED_INTERPOLATION $CPU_TEMPERATURE_THRESHOLD)
+    DECIMAL_FAN_SPEED_TO_APPLY=$(calculate_interpolated_fan_speed $DECIMAL_LOW_FAN_SPEED_OBJECTIVE $DECIMAL_HIGH_FAN_SPEED_OBJECTIVE $REFERENCE_TEMPERATURE $CPU_TEMPERATURE_THRESHOLD_FOR_FAN_SPEED_INTERPOLATION $CPU_TEMPERATURE_THRESHOLD)
     apply_user_fan_control_profile 2 $DECIMAL_FAN_SPEED_TO_APPLY
   else
     apply_user_fan_control_profile 1 $DECIMAL_LOW_FAN_SPEED_OBJECTIVE
@@ -194,7 +227,7 @@ while true; do
     printf "%s\n" "$HEADER"
     TABLE_HEADER_PRINT_COUNTER=0
   fi
-  print_temperature_array_line "$INLET_TEMPERATURE" "$CPUS_TEMPERATURES" "$EXHAUST_TEMPERATURE" "$CURRENT_FAN_CONTROL_PROFILE" "$THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE_STATUS" "$COMMENT"
+  print_temperature_array_line "$INLET_TEMPERATURE" "$CPUS_TEMPERATURES" "$GPU_TEMPERATURE" "$EXHAUST_TEMPERATURE" "$CURRENT_FAN_CONTROL_PROFILE" "$THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE_STATUS" "$COMMENT"
   ((TABLE_HEADER_PRINT_COUNTER++))
   wait $SLEEP_PROCESS_PID
 done

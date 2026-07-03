@@ -29,6 +29,9 @@ ENV CPU_TEMPERATURE_THRESHOLD_FOR_FAN_SPEED_INTERPOLATION=50
 ENV CHECK_INTERVAL=60
 ENV DISABLE_THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE=false
 ENV KEEP_THIRD_PARTY_PCIE_CARD_COOLING_RESPONSE_STATE_ON_EXIT=false
+# GPU monitoring : requires running the container with GPU access (e.g. --gpus all, Nvidia container toolkit)
+ENV ENABLE_GPU_MONITORING=false
+ENV GPU_TEMPERATURE_THRESHOLD_OFFSET=0
 # Failsafe watchdog : per-command ipmitool timeout (seconds) and consecutive failures before exiting
 ENV IPMI_COMMAND_TIMEOUT=5
 ENV IPMI_MAX_CONSECUTIVE_FAILURES=3

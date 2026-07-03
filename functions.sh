@@ -418,8 +418,14 @@ function build_header() {
 
   local header="                     ----" # Width ready for 1 CPU
 
+  # Count the GPU column as one more temperature column for the title centering
+  local number_of_extra_columns=$((number_of_CPUs - 1))
+  if $ENABLE_GPU_MONITORING; then
+    ((number_of_extra_columns++))
+  fi
+
   # Calculate the number of dashes to add on each side of the title
-  number_of_dashes=$(((number_of_CPUs-1)*CPU_column_width/2))
+  number_of_dashes=$((number_of_extra_columns*CPU_column_width/2))
 
   # Loop to add dashes
   for ((i=1; i<=number_of_dashes; i++)); do
@@ -429,7 +435,7 @@ function build_header() {
   header+=" Temperatures ---"
 
   # Check parity and add an extra dash on the right if odd
-  if (( (number_of_CPUs - 1) * CPU_column_width % 2 != 0 )); then
+  if (( number_of_extra_columns * CPU_column_width % 2 != 0 )); then
     header+="-"
   fi
 
@@ -444,6 +450,11 @@ function build_header() {
     header+=" CPU $i "
   done
 
+  # Add GPU column if GPU monitoring is enabled
+  if $ENABLE_GPU_MONITORING; then
+    header+=" GPU   "
+  fi
+
   header+=$' Exhaust          Active fan speed profile          Third-party PCIe card Dell default cooling response  Comment'
   printf "%s" "$header"
 }
@@ -451,10 +462,11 @@ function build_header() {
 function print_temperature_array_line() {
   local -r LOCAL_INLET_TEMPERATURE="$1"
   local -r LOCAL_CPUS_TEMPERATURES="$2"
-  local -r LOCAL_EXHAUST_TEMPERATURE="$3"
-  local -r LOCAL_CURRENT_FAN_CONTROL_PROFILE="$4"
-  local -r LOCAL_THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE_STATUS="$5"
-  local -r LOCAL_COMMENT="$6"
+  local -r LOCAL_GPU_TEMPERATURE="$3"
+  local -r LOCAL_EXHAUST_TEMPERATURE="$4"
+  local -r LOCAL_CURRENT_FAN_CONTROL_PROFILE="$5"
+  local -r LOCAL_THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE_STATUS="$6"
+  local -r LOCAL_COMMENT="$7"
 
   # Creating an array from the string
   local -r CPUs_temperatures_array=(${LOCAL_CPUS_TEMPERATURES//;/ })
@@ -465,7 +477,28 @@ function print_temperature_array_line() {
     printf " %3d°C " $temperature
   done
 
+  # GPU column, only when GPU monitoring is enabled ("%3s" because the value can be "-" when nvidia-smi failed)
+  if $ENABLE_GPU_MONITORING; then
+    printf " %3s°C " "$LOCAL_GPU_TEMPERATURE"
+  fi
+
   printf " %5s°C  %40s  %51s  %s\n" "$LOCAL_EXHAUST_TEMPERATURE" "$LOCAL_CURRENT_FAN_CONTROL_PROFILE" "$LOCAL_THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE_STATUS" "$LOCAL_COMMENT"
+}
+
+# Retrieve the highest temperature among all Nvidia GPUs via nvidia-smi
+# Sets :
+#   GPU_TEMPERATURE          : highest raw GPU temperature, or "-" if nvidia-smi failed
+#   ADJUSTED_GPU_TEMPERATURE : raw value minus GPU_TEMPERATURE_THRESHOLD_OFFSET, this is the value compared against the CPU thresholds
+function retrieve_gpu_temperature() {
+  GPU_TEMPERATURE=$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader 2>/dev/null | sort -rn | head -1)
+
+  if [[ "$GPU_TEMPERATURE" =~ ^[0-9]+$ ]]; then
+    ADJUSTED_GPU_TEMPERATURE=$((GPU_TEMPERATURE - GPU_TEMPERATURE_THRESHOLD_OFFSET))
+  else
+    # nvidia-smi failed or returned garbage : GPUs won't drive the fan speed this iteration
+    GPU_TEMPERATURE="-"
+    ADJUSTED_GPU_TEMPERATURE=0
+  fi
 }
 
 # Define functions to check if CPU 1 and CPU 2 temperatures are above the threshold
@@ -473,6 +506,9 @@ function CPU1_HEATING() { [ $CPU1_TEMPERATURE -gt "$CPU_TEMPERATURE_THRESHOLD_FO
 function CPU1_OVERHEATING() { [ $CPU1_TEMPERATURE -gt "$CPU_TEMPERATURE_THRESHOLD" ]; }
 function CPU2_HEATING() { [ $CPU2_TEMPERATURE -gt "$CPU_TEMPERATURE_THRESHOLD_FOR_FAN_SPEED_INTERPOLATION" ]; }
 function CPU2_OVERHEATING() { [ $CPU2_TEMPERATURE -gt "$CPU_TEMPERATURE_THRESHOLD" ]; }
+# Same checks for the GPUs, always false when GPU monitoring is disabled
+function GPU_HEATING() { $ENABLE_GPU_MONITORING && [ "$ADJUSTED_GPU_TEMPERATURE" -gt "$CPU_TEMPERATURE_THRESHOLD_FOR_FAN_SPEED_INTERPOLATION" ]; }
+function GPU_OVERHEATING() { $ENABLE_GPU_MONITORING && [ "$ADJUSTED_GPU_TEMPERATURE" -gt "$CPU_TEMPERATURE_THRESHOLD" ]; }
 
 function print_error() {
   local -r ERROR_MESSAGE="$1"
