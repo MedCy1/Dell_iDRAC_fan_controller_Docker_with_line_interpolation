@@ -13,3 +13,6 @@ readonly GPU_TEMPERATURE_THRESHOLD_OFFSET="${GPU_TEMPERATURE_THRESHOLD_OFFSET:-0
 # Failsafe watchdog : timeout (seconds) applied to every ipmitool call, and number of consecutive failures before giving fan control back to the Dell hardware controller
 readonly IPMI_COMMAND_TIMEOUT="${IPMI_COMMAND_TIMEOUT:-5}"
 readonly IPMI_MAX_CONSECUTIVE_FAILURES="${IPMI_MAX_CONSECUTIVE_FAILURES:-3}"
+
+# JSON metrics export for external monitoring agents, disabled when empty
+readonly METRICS_EXPORT_PATH="${METRICS_EXPORT_PATH:-}"

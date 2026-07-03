@@ -35,5 +35,7 @@ ENV GPU_TEMPERATURE_THRESHOLD_OFFSET=0
 # Failsafe watchdog : per-command ipmitool timeout (seconds) and consecutive failures before exiting
 ENV IPMI_COMMAND_TIMEOUT=5
 ENV IPMI_MAX_CONSECUTIVE_FAILURES=3
+# JSON metrics export for external monitoring agents, disabled when empty (e.g. /tmp/fan_metrics.json)
+ENV METRICS_EXPORT_PATH=
 
 ENTRYPOINT ["./Dell_iDRAC_fan_controller.sh"]

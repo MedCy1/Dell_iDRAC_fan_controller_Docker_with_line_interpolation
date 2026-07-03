@@ -89,6 +89,9 @@ echo "GPU monitoring enabled: $ENABLE_GPU_MONITORING"
 if $ENABLE_GPU_MONITORING; then
   echo "GPU temperature threshold offset: ${GPU_TEMPERATURE_THRESHOLD_OFFSET}°C (subtracted from GPU temperatures before threshold comparison)"
 fi
+if [ -n "$METRICS_EXPORT_PATH" ]; then
+  echo "Metrics export path: $METRICS_EXPORT_PATH"
+fi
 echo "Fan speed interpolation enabled: $FAN_SPEED_INTERPOLATION_ENABLED"
 if $FAN_SPEED_INTERPOLATION_ENABLED; then
   echo "Fan speed lower value: $DECIMAL_LOW_FAN_SPEED_OBJECTIVE%"
@@ -229,5 +232,9 @@ while true; do
   fi
   print_temperature_array_line "$INLET_TEMPERATURE" "$CPUS_TEMPERATURES" "$GPU_TEMPERATURE" "$EXHAUST_TEMPERATURE" "$CURRENT_FAN_CONTROL_PROFILE" "$THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE_STATUS" "$COMMENT"
   ((TABLE_HEADER_PRINT_COUNTER++))
+
+  # Export metrics as JSON for external monitoring agents, if enabled
+  export_metrics
+
   wait $SLEEP_PROCESS_PID
 done

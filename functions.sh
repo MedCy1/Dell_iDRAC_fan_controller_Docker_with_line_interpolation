@@ -501,6 +501,30 @@ function retrieve_gpu_temperature() {
   fi
 }
 
+# Atomically export the current state as a JSON object for external monitoring agents
+# Written to a temporary file then mv-ed into place (atomic on the same filesystem) so readers never see a partial file
+function export_metrics() {
+  if [ -z "$METRICS_EXPORT_PATH" ]; then
+    return 0
+  fi
+
+  # The fan speed really applied to the iDRAC, null when the Dell default dynamic profile is in control
+  local CURRENT_FAN_SPEED_PERCENT="null"
+  if [[ "$LAST_APPLIED_FAN_SPEED" == 0x* ]]; then
+    CURRENT_FAN_SPEED_PERCENT=$(convert_hexadecimal_value_to_decimal "$LAST_APPLIED_FAN_SPEED")
+  fi
+
+  local GPU_TEMPERATURE_JSON="null"
+  if [[ "$GPU_TEMPERATURE" =~ ^[0-9]+$ ]]; then
+    GPU_TEMPERATURE_JSON="$GPU_TEMPERATURE"
+  fi
+
+  local -r TEMPORARY_METRICS_FILE="${METRICS_EXPORT_PATH}.tmp"
+  printf '{"timestamp":"%s","cpu_temp":%s,"gpu_temp":%s,"inlet_temp":%s,"current_fan_speed_percent":%s,"active_profile":"%s"}\n' \
+    "$(date -Iseconds)" "${HIGHEST_CPU_TEMPERATURE:-null}" "$GPU_TEMPERATURE_JSON" "${INLET_TEMPERATURE:-null}" "$CURRENT_FAN_SPEED_PERCENT" "$CURRENT_FAN_CONTROL_PROFILE" > "$TEMPORARY_METRICS_FILE" \
+    && mv "$TEMPORARY_METRICS_FILE" "$METRICS_EXPORT_PATH"
+}
+
 # Define functions to check if CPU 1 and CPU 2 temperatures are above the threshold
 function CPU1_HEATING() { [ $CPU1_TEMPERATURE -gt "$CPU_TEMPERATURE_THRESHOLD_FOR_FAN_SPEED_INTERPOLATION" ]; }
 function CPU1_OVERHEATING() { [ $CPU1_TEMPERATURE -gt "$CPU_TEMPERATURE_THRESHOLD" ]; }
